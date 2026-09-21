@@ -20,12 +20,21 @@ The plugin does not change WordPress core or the active theme. The shortcode loa
 
 ## What visitors receive
 
-- A responsive landing screen, URL field, staged progress state, and 0–100 score gauge.
-- A detailed dashboard with **Passed**, **Warning**, and **Critical issue** states.
-- Impact-ranked fixes, a Contact SearchCounselco CTA, a Get Full Report jump link, and a free-consultation form.
+- A premium, mobile-first landing screen with a focused URL field and responsive layout from 320px through large desktop widths.
+- A staged, indeterminate progress experience that describes the work being performed without displaying a fabricated completion percentage.
+- A dominant 0–100 SEO health score, real issue distribution, and category pass rates calculated from completed audit checks.
+- A professional report dashboard with **Passed**, **Warning**, and **Critical issue** states, category accordions, and filters for faster scanning.
+- An impact-ranked SEO action plan, a Google-style result preview when title or description data is available, and clear empty/error states.
+- A focused SearchCounselco growth CTA and an accessible free-consultation form with inline validation.
 - Checks for title, description, heading structure (H1–H3), canonical URL, HTTPS, robots meta, `robots.txt`, sitemap, Open Graph, Twitter Cards, structured data, image alt attributes, internal/external links, a limited broken-link sample, word count, page-size signals, viewport, language, HTTP status, and Core Web Vitals guidance.
 
 Core Web Vitals (LCP, INP, CLS) require browser or real-user measurement. This plugin offers server-response and HTML-payload guidance rather than claiming to provide field metrics.
+
+The public interface is rendered from the audit response already produced by the plugin. It does not invent category scores, issue counts, recommendations, or search-preview content.
+
+### Frontend markup compatibility
+
+Version 1.2.0 introduces a new public report structure and replaces several presentation-only selectors from earlier versions. Third-party theme CSS or JavaScript that targets legacy selectors such as `.scsa-progress`, `.scsa-summary-card`, or `[data-step]` may need to be updated. The supported shortcode remains `[searchcounsel_audit]`, and the audit and consultation request contracts are unchanged.
 
 ## Architecture
 

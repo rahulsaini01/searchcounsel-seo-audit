@@ -3,7 +3,7 @@
  * Plugin Name: SearchCounsel SEO Audit
  * Plugin URI:  https://searchcounsel.co/
  * Description: A public-facing, secure SEO audit and lead-generation tool for SearchCounselco.
- * Version:     1.1.1
+ * Version:     1.2.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author:      SearchCounsel
@@ -17,7 +17,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'SCSA_VERSION', '1.1.1' );
+define( 'SCSA_VERSION', '1.2.0' );
 define( 'SCSA_PLUGIN_FILE', __FILE__ );
 define( 'SCSA_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'SCSA_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
