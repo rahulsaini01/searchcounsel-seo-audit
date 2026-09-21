@@ -15,6 +15,7 @@
 	};
 	var statusIcons = { pass: '✓', warning: '!', critical: '×' };
 	var statusRank = { pass: 0, warning: 1, critical: 2 };
+	var pageSpeedInstance = 0;
 	var categoryDefinitions = [
 		{
 			key: 'technical',
@@ -422,7 +423,234 @@
 		return card;
 	}
 
-	function createCategoryAccordion( group, open ) {
+	function pageSpeedStatusName( status ) {
+		var names = {
+			good: config.i18n.good,
+			needs_improvement: config.i18n.needsImprovement,
+			poor: config.i18n.poor
+		};
+
+		return names[ status ] || '';
+	}
+
+	function pageSpeedMetricDefinition( key ) {
+		var definitions = {
+			fcp: { name: config.i18n.fcp, help: config.i18n.fcpHelp },
+			lcp: { name: config.i18n.lcp, help: config.i18n.lcpHelp },
+			inp: { name: config.i18n.inp, help: config.i18n.inpHelp },
+			tbt: { name: config.i18n.tbt, help: config.i18n.tbtHelp },
+			cls: { name: config.i18n.cls, help: config.i18n.clsHelp },
+			speed_index: { name: config.i18n.speedIndex, help: config.i18n.speedIndexHelp },
+			ttfb: { name: config.i18n.ttfb, help: config.i18n.ttfbHelp }
+		};
+
+		return definitions[ key ];
+	}
+
+	function pageSpeedMetricValue( key, metric ) {
+		if ( ! metric || ! metric.available ) {
+			return config.i18n.unavailable;
+		}
+		if ( metric.display ) {
+			return metric.display;
+		}
+		if ( typeof metric.value !== 'number' || ! Number.isFinite( metric.value ) ) {
+			return config.i18n.unavailable;
+		}
+		if ( key === 'cls' || metric.unit === 'unitless' ) {
+			return metric.value.toFixed( 2 );
+		}
+		if ( metric.unit === 'millisecond' ) {
+			return metric.value >= 1000 ? ( metric.value / 1000 ).toFixed( 1 ) + ' s' : Math.round( metric.value ) + ' ms';
+		}
+
+		return String( metric.value );
+	}
+
+	function createPageSpeedMetric( key, metric ) {
+		var definition = pageSpeedMetricDefinition( key );
+		var status = metric && metric.available ? pageSpeedStatusName( metric.status ) : '';
+		var card = element( 'article', 'scsa-pagespeed-metric' );
+		var heading = element( 'div', 'scsa-pagespeed-metric-heading' );
+
+		if ( metric && metric.status ) {
+			card.classList.add( 'is-' + metric.status.replace( '_', '-' ) );
+		}
+		heading.appendChild( element( 'strong', '', definition.name ) );
+		if ( status ) {
+			heading.appendChild( element( 'span', 'scsa-pagespeed-status', status ) );
+		}
+		card.appendChild( heading );
+		card.appendChild( element( 'span', 'scsa-pagespeed-metric-value', pageSpeedMetricValue( key, metric ) ) );
+		card.appendChild( element( 'p', '', definition.help ) );
+
+		return card;
+	}
+
+	function appendPageSpeedMetrics( parent, metrics, keys ) {
+		var grid = element( 'div', 'scsa-pagespeed-metrics' );
+
+		keys.forEach( function ( key ) {
+			grid.appendChild( createPageSpeedMetric( key, metrics && metrics[ key ] ? metrics[ key ] : { available: false } ) );
+		} );
+		parent.appendChild( grid );
+	}
+
+	function createPageSpeedScore( result ) {
+		var hasScore = result.score !== null && result.score !== '' && Number.isFinite( Number( result.score ) );
+		var score = hasScore ? Number( result.score ) : null;
+		var row = element( 'div', 'scsa-pagespeed-performance' );
+		var copy = element( 'div', '' );
+		var value = element( 'strong', '', hasScore ? score : config.i18n.unavailable );
+
+		copy.appendChild( element( 'span', '', config.i18n.performance ) );
+		if ( hasScore ) {
+			value.classList.add( score >= 90 ? 'is-good' : score >= 50 ? 'is-needs-improvement' : 'is-poor' );
+		}
+		row.appendChild( copy );
+		row.appendChild( value );
+		if ( hasScore ) {
+			row.appendChild( element( 'small', '', '/ 100' ) );
+		}
+
+		return row;
+	}
+
+	function createPageSpeedItems( className, items ) {
+		var list = element( 'ul', className );
+
+		items.forEach( function ( item ) {
+			var row = element( 'li', '' );
+			var itemValue = item.value || '';
+			if ( ! itemValue && typeof item.savings_ms === 'number' && Number.isFinite( item.savings_ms ) ) {
+				itemValue = Math.round( item.savings_ms ) + ' ms';
+			} else if ( ! itemValue && typeof item.savings_bytes === 'number' && Number.isFinite( item.savings_bytes ) ) {
+				itemValue = Math.round( item.savings_bytes / 1024 ) + ' KB';
+			}
+			row.appendChild( element( 'span', '', item.title || '' ) );
+			if ( itemValue ) {
+				row.appendChild( element( 'strong', '', itemValue ) );
+			}
+			list.appendChild( row );
+		} );
+
+		return list;
+	}
+
+	function renderPageSpeedPanel( module, strategy ) {
+		var data = module.scsaPageSpeedData || {};
+		var result = data[ strategy ] || { available: false };
+		var panel = module.querySelector( '.scsa-pagespeed-panel' );
+		var activeTab = module.querySelector( '[data-scsa-pagespeed-tab="' + strategy + '"]' );
+
+		panel.replaceChildren();
+		panel.setAttribute( 'aria-labelledby', activeTab ? activeTab.id : '' );
+		if ( ! result.available ) {
+			panel.appendChild( element( 'p', 'scsa-pagespeed-unavailable', config.i18n.performanceUnavailable ) );
+			return;
+		}
+
+		panel.appendChild( createPageSpeedScore( result ) );
+
+		var lab = element( 'section', 'scsa-pagespeed-data-section' );
+		lab.appendChild( element( 'h5', '', config.i18n.labData ) );
+		lab.appendChild( element( 'p', 'scsa-pagespeed-section-copy', config.i18n.labDescription ) );
+		lab.appendChild( element( 'h6', '', config.i18n.coreWebVitals ) );
+		appendPageSpeedMetrics( lab, result.lab && result.lab.metrics, [ 'lcp', 'inp', 'cls' ] );
+		lab.appendChild( element( 'h6', '', config.i18n.performanceMetrics ) );
+		appendPageSpeedMetrics( lab, result.lab && result.lab.metrics, [ 'fcp', 'tbt', 'speed_index', 'ttfb' ] );
+		panel.appendChild( lab );
+
+		var field = element( 'section', 'scsa-pagespeed-data-section' );
+		field.appendChild( element( 'h5', '', config.i18n.fieldData ) );
+		field.appendChild( element( 'p', 'scsa-pagespeed-section-copy', config.i18n.fieldDescription ) );
+		if ( result.field && result.field.available ) {
+			field.appendChild( element( 'span', 'scsa-pagespeed-field-scope', result.field.scope === 'origin' ? config.i18n.originFieldData : config.i18n.urlFieldData ) );
+			appendPageSpeedMetrics( field, result.field.metrics, [ 'lcp', 'inp', 'cls', 'fcp', 'ttfb' ] );
+		} else {
+			field.appendChild( element( 'p', 'scsa-pagespeed-unavailable', config.i18n.fieldUnavailable ) );
+		}
+		panel.appendChild( field );
+
+		if ( Array.isArray( result.opportunities ) && result.opportunities.length ) {
+			var opportunities = element( 'section', 'scsa-pagespeed-data-section' );
+			opportunities.appendChild( element( 'h5', '', config.i18n.opportunities ) );
+			opportunities.appendChild( createPageSpeedItems( 'scsa-pagespeed-item-list', result.opportunities ) );
+			panel.appendChild( opportunities );
+		}
+
+		if ( Array.isArray( result.diagnostics ) && result.diagnostics.length ) {
+			var diagnostics = element( 'details', 'scsa-pagespeed-diagnostics' );
+			diagnostics.appendChild( element( 'summary', '', config.i18n.diagnostics ) );
+			diagnostics.appendChild( createPageSpeedItems( 'scsa-pagespeed-item-list', result.diagnostics ) );
+			panel.appendChild( diagnostics );
+		}
+	}
+
+	function selectPageSpeedStrategy( module, strategy, moveFocus ) {
+		module.querySelectorAll( '[data-scsa-pagespeed-tab]' ).forEach( function ( button ) {
+			var selected = button.dataset.scsaPagespeedTab === strategy;
+			button.setAttribute( 'aria-selected', selected ? 'true' : 'false' );
+			button.tabIndex = selected ? 0 : -1;
+			if ( selected && moveFocus ) {
+				button.focus();
+			}
+		} );
+		renderPageSpeedPanel( module, strategy );
+	}
+
+	function createPageSpeedModule( performance ) {
+		pageSpeedInstance++;
+		var module = element( 'section', 'scsa-pagespeed' );
+		var header = element( 'div', 'scsa-pagespeed-header' );
+		var title = element( 'div', '' );
+		var tabs = element( 'div', 'scsa-pagespeed-tabs' );
+		var details = element( 'details', 'scsa-pagespeed-details' );
+		var panel = element( 'div', 'scsa-pagespeed-panel' );
+		var panelId = 'scsa-pagespeed-panel-' + pageSpeedInstance;
+		var data = performance && typeof performance === 'object' ? performance : {};
+
+		title.appendChild( element( 'span', 'scsa-pagespeed-kicker', config.i18n.pageSpeedTitle ) );
+		title.appendChild( element( 'p', '', config.i18n.labDescription ) );
+		header.appendChild( title );
+		module.appendChild( header );
+		tabs.setAttribute( 'role', 'tablist' );
+		tabs.setAttribute( 'aria-label', config.i18n.pageSpeedTitle );
+
+		[ 'desktop', 'mobile' ].forEach( function ( strategy, index ) {
+			var result = data[ strategy ] || { available: false };
+			var label = strategy === 'desktop' ? config.i18n.desktop : config.i18n.mobile;
+			var hasScore = result.available && result.score !== null && result.score !== '' && Number.isFinite( Number( result.score ) );
+			var score = hasScore ? Number( result.score ) : config.i18n.unavailable;
+			var button = element( 'button', 'scsa-pagespeed-tab' );
+
+			button.type = 'button';
+			button.id = 'scsa-pagespeed-tab-' + pageSpeedInstance + '-' + strategy;
+			button.dataset.scsaPagespeedTab = strategy;
+			button.setAttribute( 'role', 'tab' );
+			button.setAttribute( 'aria-controls', panelId );
+			button.setAttribute( 'aria-selected', index === 0 ? 'true' : 'false' );
+			button.setAttribute( 'aria-label', formatText( hasScore ? config.i18n.pageSpeedScore : config.i18n.pageSpeedUnavailableScore, hasScore ? [ label, score ] : [ label ] ) );
+			button.tabIndex = index === 0 ? 0 : -1;
+			button.appendChild( element( 'span', '', label ) );
+			button.appendChild( element( 'strong', '', score ) );
+			tabs.appendChild( button );
+		} );
+
+		module.appendChild( tabs );
+		details.appendChild( element( 'summary', 'scsa-pagespeed-details-summary', config.i18n.viewDetails ) );
+		panel.id = panelId;
+		panel.setAttribute( 'role', 'tabpanel' );
+		panel.tabIndex = 0;
+		details.appendChild( panel );
+		module.appendChild( details );
+		module.scsaPageSpeedData = data;
+		selectPageSpeedStrategy( module, 'desktop', false );
+
+		return module;
+	}
+
+	function createCategoryAccordion( group, open, performance ) {
 		var counts = categoryCounts( group.results );
 		var accordion = element( 'details', 'scsa-audit-category' );
 		var summary = element( 'summary', 'scsa-audit-category-summary' );
@@ -450,12 +678,15 @@
 		} ).forEach( function ( result ) {
 			cards.appendChild( createCheckCard( result ) );
 		} );
+		if ( group.definition.key === 'technical' ) {
+			cards.appendChild( createPageSpeedModule( performance ) );
+		}
 		accordion.appendChild( summary );
 		accordion.appendChild( cards );
 		return accordion;
 	}
 
-	function renderDetailedChecks( tool, groups ) {
+	function renderDetailedChecks( tool, groups, performance ) {
 		var container = tool.querySelector( '.scsa-checks' );
 		var highestSeverity = groups.reduce( function ( highest, group ) {
 			return Math.max( highest, categorySeverity( group.results ) );
@@ -465,7 +696,7 @@
 
 		groups.forEach( function ( group ) {
 			var shouldOpen = ! opened && categorySeverity( group.results ) === highestSeverity;
-			container.appendChild( createCategoryAccordion( group, shouldOpen ) );
+			container.appendChild( createCategoryAccordion( group, shouldOpen, performance ) );
 			opened = opened || shouldOpen;
 		} );
 	}
@@ -508,7 +739,7 @@
 		renderCategorySummary( tool, groups );
 		renderRecommendations( tool, report.recommendations, results );
 		renderSerpPreview( tool, results, report.audited_url );
-		renderDetailedChecks( tool, groups );
+		renderDetailedChecks( tool, groups, report.performance );
 		tool.querySelector( '.scsa-consultation-form [name="website"]' ).value = report.audited_url || '';
 		setCheckFilter( tool, 'all' );
 		reportPanel.hidden = false;
@@ -625,6 +856,7 @@
 		tool.addEventListener( 'click', function ( event ) {
 			var filter = event.target.closest( '[data-scsa-filter]' );
 			var categoryButton = event.target.closest( '[data-category-target]' );
+			var pageSpeedTab = event.target.closest( '[data-scsa-pagespeed-tab]' );
 			var runAgain = event.target.closest( '.scsa-audit-another, .scsa-run-again' );
 
 			if ( filter ) {
@@ -640,9 +872,37 @@
 					scrollToElement( category, 'center' );
 				}
 			}
+			if ( pageSpeedTab ) {
+				var pageSpeedModule = pageSpeedTab.closest( '.scsa-pagespeed' );
+				if ( pageSpeedModule ) {
+					selectPageSpeedStrategy( pageSpeedModule, pageSpeedTab.dataset.scsaPagespeedTab, false );
+				}
+			}
 			if ( runAgain ) {
 				focusAuditForm( tool );
 			}
+		} );
+
+		tool.addEventListener( 'keydown', function ( event ) {
+			var activeTab = event.target.closest( '[data-scsa-pagespeed-tab]' );
+			if ( ! activeTab || ! [ 'ArrowLeft', 'ArrowRight', 'Home', 'End' ].includes( event.key ) ) {
+				return;
+			}
+
+			var pageSpeedModule = activeTab.closest( '.scsa-pagespeed' );
+			var tabs = Array.prototype.slice.call( pageSpeedModule.querySelectorAll( '[data-scsa-pagespeed-tab]' ) );
+			var index = tabs.indexOf( activeTab );
+
+			if ( event.key === 'Home' ) {
+				index = 0;
+			} else if ( event.key === 'End' ) {
+				index = tabs.length - 1;
+			} else {
+				index = ( index + ( event.key === 'ArrowRight' ? 1 : -1 ) + tabs.length ) % tabs.length;
+			}
+
+			event.preventDefault();
+			selectPageSpeedStrategy( pageSpeedModule, tabs[ index ].dataset.scsaPagespeedTab, true );
 		} );
 
 		consultationForm.querySelectorAll( 'input, textarea' ).forEach( function ( field ) {

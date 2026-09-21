@@ -58,6 +58,7 @@ $consultation_id = $instance_id . '-consultation';
 			<li data-stage="<?php esc_attr_e( 'Checking technical SEO…', 'searchcounsel-seo-audit' ); ?>"><?php esc_html_e( 'Technical SEO', 'searchcounsel-seo-audit' ); ?></li>
 			<li data-stage="<?php esc_attr_e( 'Analyzing content structure…', 'searchcounsel-seo-audit' ); ?>"><?php esc_html_e( 'Content structure', 'searchcounsel-seo-audit' ); ?></li>
 			<li data-stage="<?php esc_attr_e( 'Checking links and metadata…', 'searchcounsel-seo-audit' ); ?>"><?php esc_html_e( 'Links and metadata', 'searchcounsel-seo-audit' ); ?></li>
+			<li data-stage="<?php esc_attr_e( 'Checking page performance…', 'searchcounsel-seo-audit' ); ?>"><?php esc_html_e( 'Page performance', 'searchcounsel-seo-audit' ); ?></li>
 			<li data-stage="<?php esc_attr_e( 'Preparing your report…', 'searchcounsel-seo-audit' ); ?>"><?php esc_html_e( 'Preparing report', 'searchcounsel-seo-audit' ); ?></li>
 		</ol>
 		<p class="scsa-loading-note"><?php esc_html_e( 'This usually takes less than a minute. Complex pages may take a little longer.', 'searchcounsel-seo-audit' ); ?></p>
