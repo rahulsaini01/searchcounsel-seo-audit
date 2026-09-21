@@ -91,7 +91,13 @@
 		container.replaceChildren();
 
 		if ( ! recommendations || ! recommendations.length ) {
-			container.appendChild( element( 'p', 'scsa-empty-state', 'Great work — no priority actions were identified in this audit.' ) );
+			var success = element( 'div', 'scsa-empty-state' );
+			success.appendChild( element( 'span', 'scsa-empty-icon', '✓' ) );
+			var successCopy = element( 'div', '' );
+			successCopy.appendChild( element( 'strong', '', 'Your highest-impact SEO foundations look healthy.' ) );
+			successCopy.appendChild( element( 'p', '', 'Keep monitoring your content, links, and performance as the site evolves.' ) );
+			success.appendChild( successCopy );
+			container.appendChild( success );
 			return;
 		}
 
@@ -123,32 +129,93 @@
 		return list;
 	}
 
-	function renderChecks( tool, results ) {
-		var container = tool.querySelector( '.scsa-checks' );
-		container.replaceChildren();
-
-		( results || [] ).forEach( function ( result ) {
+	function createCheckCard( result, isExpanded ) {
 			var status = safeStatus( result.status );
-			var card = element( 'article', 'scsa-check scsa-status-' + status );
-			var header = element( 'div', 'scsa-check-header' );
+			var card = element( 'details', 'scsa-check scsa-status-' + status );
+			var header = element( 'summary', 'scsa-check-header' );
+			var heading = element( 'div', 'scsa-check-heading' );
 			var title = element( 'h4', '', result.label || '' );
-			var pill = element( 'span', 'scsa-status-pill', statusNames[ status ] );
 			var summary = element( 'p', 'scsa-check-summary', result.summary || '' );
+			var meta = element( 'div', 'scsa-check-meta' );
+			var pill = element( 'span', 'scsa-status-pill', statusNames[ status ] );
+			var chevron = element( 'span', 'scsa-check-chevron', '⌄' );
+			var body = element( 'div', 'scsa-check-body' );
 			var fix = element( 'p', 'scsa-check-fix', result.recommendation || '' );
 			var fixLabel = element( 'strong', '', 'Recommendation: ' );
 			fix.prepend( fixLabel );
-			header.appendChild( title );
-			header.appendChild( pill );
-			card.appendChild( header );
-			card.appendChild( summary );
-			card.appendChild( fix );
+			card.open = Boolean( isExpanded );
+			heading.appendChild( title );
+			heading.appendChild( summary );
+			meta.appendChild( pill );
+			meta.appendChild( chevron );
+		header.appendChild( heading );
+		header.appendChild( meta );
+		card.appendChild( header );
+			body.appendChild( fix );
 
 			if ( result.details && Object.keys( result.details ).length ) {
-				card.appendChild( detailsList( result.details ) );
+				body.appendChild( detailsList( result.details ) );
 			}
 
-			container.appendChild( card );
+			card.appendChild( body );
+
+			return card;
+	}
+
+	function createCheckGroup( title, description, status, results, expanded ) {
+		var group = element( 'section', 'scsa-check-group scsa-status-' + status );
+		var header = element( 'div', 'scsa-check-group-header' );
+		var copy = element( 'div', '' );
+		copy.appendChild( element( 'h4', '', title ) );
+		copy.appendChild( element( 'p', '', description ) );
+		header.appendChild( copy );
+		header.appendChild( element( 'span', 'scsa-group-count', String( results.length ) ) );
+		group.appendChild( header );
+		var cards = element( 'div', 'scsa-check-group-cards' );
+		results.forEach( function ( result ) {
+			cards.appendChild( createCheckCard( result, expanded ) );
 		} );
+		group.appendChild( cards );
+		return group;
+	}
+
+	function createPassedGroup( results ) {
+		var group = element( 'details', 'scsa-passed-group' );
+		var summary = element( 'summary', '' );
+		var badge = element( 'span', 'scsa-passed-badge', '✓' );
+		var copy = element( 'span', 'scsa-passed-copy' );
+		copy.appendChild( element( 'strong', '', String( results.length ) + ' checks passed' ) );
+		copy.appendChild( element( 'small', '', 'Your core SEO signals are in good shape.' ) );
+		summary.appendChild( badge );
+		summary.appendChild( copy );
+		summary.appendChild( element( 'span', 'scsa-passed-toggle', 'View details' ) );
+		group.appendChild( summary );
+		var cards = element( 'div', 'scsa-check-group-cards scsa-passed-cards' );
+		results.forEach( function ( result ) {
+			cards.appendChild( createCheckCard( result, false ) );
+		} );
+		group.appendChild( cards );
+		return group;
+	}
+
+	function renderChecks( tool, results ) {
+		var container = tool.querySelector( '.scsa-checks' );
+		var groups = { critical: [], warning: [], pass: [] };
+		container.replaceChildren();
+
+		( results || [] ).forEach( function ( result ) {
+			groups[ safeStatus( result.status ) ].push( result );
+		} );
+
+		if ( groups.critical.length ) {
+			container.appendChild( createCheckGroup( 'Critical issues', 'Resolve these first—they can directly limit visibility or user trust.', 'critical', groups.critical, true ) );
+		}
+		if ( groups.warning.length ) {
+			container.appendChild( createCheckGroup( 'Opportunities to improve', 'These refinements can strengthen search appearance and page quality.', 'warning', groups.warning, true ) );
+		}
+		if ( groups.pass.length ) {
+			container.appendChild( createPassedGroup( groups.pass ) );
+		}
 	}
 
 	function renderReport( tool, report ) {
