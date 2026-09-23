@@ -16,30 +16,33 @@ class SCSA_PageSpeed_Insights {
 	const ENDPOINT = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed';
 
 	/**
-	 * Maximum wall-clock budget for all uncached PageSpeed work.
-	 *
-	 * Each strategy is capped below this value so a slow Desktop request cannot
-	 * consume the time reserved for Mobile (or vice versa). The two five-second
-	 * request caps leave additional headroom inside this twelve-second budget for
-	 * WordPress HTTP setup and response normalization.
-	 *
-	 * @var float
-	 */
-	const TOTAL_BUDGET_SECONDS = 12.0;
-
-	/**
 	 * Maximum timeout for one uncached strategy request.
 	 *
-	 * @var float
-	 */
-	const REQUEST_TIMEOUT_SECONDS = 5.0;
-
-	/**
-	 * Minimum useful time remaining before another request may start.
+	 * PageSpeed now runs after the main report has rendered. Desktop and mobile
+	 * are requested through independent AJAX calls, so this bound applies to one
+	 * Google request and cannot delay the core SEO audit.
 	 *
 	 * @var float
 	 */
-	const MINIMUM_REQUEST_SECONDS = 1.0;
+	const REQUEST_TIMEOUT_SECONDS = 25.0;
+
+	/**
+	 * Maximum wait for another request filling the same strategy cache.
+	 *
+	 * @var int
+	 */
+	const CACHE_LOCK_WAIT_SECONDS = 5;
+
+	/**
+	 * Determines whether public PageSpeed requests should be offered.
+	 *
+	 * @return bool
+	 */
+	public static function is_configured() {
+		$settings = SCSA_Settings::get();
+
+		return ! empty( $settings['pagespeed_enabled'] ) && '' !== SCSA_Settings::get_pagespeed_api_key();
+	}
 
 	/**
 	 * Retrieves normalized desktop and mobile performance data.
@@ -52,85 +55,123 @@ class SCSA_PageSpeed_Insights {
 	 * @return array<string,array<string,mixed>>
 	 */
 	public function analyze( $url ) {
-		try {
-			return $this->analyze_internal( $url );
-		} catch ( Throwable $exception ) {
-			$empty = $this->unavailable_result();
+		return array(
+			'desktop' => $this->analyze_strategy( $url, 'desktop' ),
+			'mobile'  => $this->analyze_strategy( $url, 'mobile' ),
+		);
+	}
 
-			return array(
-				'desktop' => $empty,
-				'mobile'  => $empty,
+	/**
+	 * Retrieves one independently cached and bounded PageSpeed strategy.
+	 *
+	 * @param string $url      Validated final audit URL.
+	 * @param string $strategy Desktop or mobile.
+	 * @return array<string,mixed>
+	 */
+	public function analyze_strategy( $url, $strategy ) {
+		$started_at = microtime( true );
+
+		if ( ! in_array( $strategy, array( 'desktop', 'mobile' ), true ) ) {
+			return $this->unavailable_result();
+		}
+
+		try {
+			return $this->analyze_strategy_internal( $url, $strategy );
+		} catch ( Throwable $exception ) {
+			$this->record_diagnostic(
+				$url,
+				$strategy,
+				array(
+					'elapsed_ms'    => $this->elapsed_milliseconds( $started_at ),
+					'wp_error_code' => 'internal_exception',
+				)
 			);
+
+			return $this->unavailable_result();
 		}
 	}
 
 	/**
-	 * Runs the configured PageSpeed workflow.
+	 * Runs the configured workflow for one strategy.
 	 *
-	 * @param string $url Validated final audit URL.
-	 * @return array<string,array<string,mixed>>
+	 * @param string $url      Validated final audit URL.
+	 * @param string $strategy Desktop or mobile.
+	 * @return array<string,mixed>
 	 */
-	private function analyze_internal( $url ) {
+	private function analyze_strategy_internal( $url, $strategy ) {
 		$settings = SCSA_Settings::get();
-		$empty    = $this->unavailable_result();
 
 		if ( empty( $settings['pagespeed_enabled'] ) ) {
-			return array(
-				'desktop' => $empty,
-				'mobile'  => $empty,
-			);
+			return $this->unavailable_result();
 		}
 
 		$api_key = SCSA_Settings::get_pagespeed_api_key();
 
 		if ( '' === $api_key ) {
-			return array(
-				'desktop' => $empty,
-				'mobile'  => $empty,
-			);
+			return $this->unavailable_result();
 		}
 
 		$cache_duration = max( 5, min( 1440, absint( $settings['pagespeed_cache_duration'] ) ) ) * MINUTE_IN_SECONDS;
-		$strategies     = array( 'desktop', 'mobile' );
-		$results        = array();
-		$pending        = array();
+		$cached         = $this->get_cached_result( $url, $strategy );
 
-		// Resolve both independent caches before starting the shared time budget.
-		foreach ( $strategies as $strategy ) {
+		if ( false !== $cached ) {
+			$this->record_diagnostic(
+				$url,
+				$strategy,
+				array(
+					'elapsed_ms' => 0,
+					'cache_hit'  => true,
+				)
+			);
+
+			return $cached;
+		}
+
+		$lock_started_at = microtime( true );
+		$lock            = SCSA_Database_Lock::acquire( 'psi', $url . '|' . $strategy, self::CACHE_LOCK_WAIT_SECONDS );
+
+		if ( is_wp_error( $lock ) ) {
+			// The owner may have completed at the wait boundary; reuse its cache.
 			$cached = $this->get_cached_result( $url, $strategy );
 
 			if ( false !== $cached ) {
-				$results[ $strategy ] = $cached;
-			} else {
-				$results[ $strategy ] = $empty;
-				$pending[]             = $strategy;
-			}
-		}
-
-		if ( empty( $pending ) ) {
-			return $results;
-		}
-
-		$started_at = microtime( true );
-
-		foreach ( $pending as $strategy ) {
-			$remaining = self::TOTAL_BUDGET_SECONDS - ( microtime( true ) - $started_at );
-
-			if ( $remaining < self::MINIMUM_REQUEST_SECONDS ) {
-				continue;
+				return $cached;
 			}
 
-			$timeout = min( self::REQUEST_TIMEOUT_SECONDS, $remaining );
+			$this->record_diagnostic(
+				$url,
+				$strategy,
+				array(
+					'elapsed_ms'    => $this->elapsed_milliseconds( $lock_started_at ),
+					'wp_error_code' => 'pagespeed_lock_unavailable',
+				)
+			);
 
-			try {
-				$results[ $strategy ] = $this->request_strategy( $url, $strategy, $api_key, $cache_duration, $timeout );
-			} catch ( Throwable $exception ) {
-				// A strategy-specific failure must not suppress the other strategy.
-				$results[ $strategy ] = $empty;
-			}
+			return $this->unavailable_result();
 		}
 
-		return $results;
+		try {
+			// Another request may have populated the cache while this one waited.
+			$cached = $this->get_cached_result( $url, $strategy );
+
+			if ( false !== $cached ) {
+				$this->record_diagnostic(
+					$url,
+					$strategy,
+					array(
+						'elapsed_ms' => 0,
+						'cache_hit'  => true,
+						'waited'     => true,
+					)
+				);
+
+				return $cached;
+			}
+
+			return $this->request_strategy( $url, $strategy, $api_key, $cache_duration );
+		} finally {
+			$lock->release();
+		}
 	}
 
 	/**
@@ -157,11 +198,11 @@ class SCSA_PageSpeed_Insights {
 	 * @param string $strategy       Desktop or mobile.
 	 * @param string $api_key        Server-side Google API key.
 	 * @param int    $cache_duration Cache duration in seconds.
-	 * @param float  $timeout        Bounded request timeout in seconds.
 	 * @return array<string,mixed>
 	 */
-	private function request_strategy( $url, $strategy, $api_key, $cache_duration, $timeout ) {
+	private function request_strategy( $url, $strategy, $api_key, $cache_duration ) {
 		$cache_key   = $this->cache_key( $url, $strategy );
+		$started_at  = microtime( true );
 		$request_url = add_query_arg(
 			array(
 				'url'      => $url,
@@ -173,7 +214,7 @@ class SCSA_PageSpeed_Insights {
 		$response    = wp_safe_remote_get(
 			$request_url,
 			array(
-				'timeout'             => max( self::MINIMUM_REQUEST_SECONDS, (float) $timeout ),
+				'timeout'             => self::REQUEST_TIMEOUT_SECONDS,
 				'redirection'         => 0,
 				'reject_unsafe_urls'  => true,
 				'limit_response_size' => 3 * MB_IN_BYTES,
@@ -184,13 +225,26 @@ class SCSA_PageSpeed_Insights {
 			)
 		);
 
-		if ( is_wp_error( $response ) || 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+		if ( is_wp_error( $response ) ) {
+			$this->record_diagnostic(
+				$url,
+				$strategy,
+				array(
+					'elapsed_ms'    => $this->elapsed_milliseconds( $started_at ),
+					'wp_error_code' => sanitize_key( $response->get_error_code() ),
+				)
+			);
+
 			return $this->unavailable_result();
 		}
 
-		$decoded = json_decode( (string) wp_remote_retrieve_body( $response ), true );
+		$http_status = (int) wp_remote_retrieve_response_code( $response );
+		$decoded     = json_decode( (string) wp_remote_retrieve_body( $response ), true );
+		$diagnostic  = $this->response_diagnostic( $decoded, $http_status, $started_at, $api_key );
 
-		if ( ! is_array( $decoded ) ) {
+		$this->record_diagnostic( $url, $strategy, $diagnostic );
+
+		if ( 200 !== $http_status || ! is_array( $decoded ) ) {
 			return $this->unavailable_result();
 		}
 
@@ -473,6 +527,88 @@ class SCSA_PageSpeed_Insights {
 		);
 
 		return isset( $statuses[ $category ] ) ? $statuses[ $category ] : '';
+	}
+
+	/**
+	 * Builds a private, sanitized summary of a Google response for diagnostics.
+	 *
+	 * @param mixed  $decoded    Decoded response body, if valid JSON.
+	 * @param int    $http_status HTTP response status.
+	 * @param float  $started_at Request start timestamp.
+	 * @param string $api_key    API key used only to redact an accidental echo.
+	 * @return array<string,mixed>
+	 */
+	private function response_diagnostic( $decoded, $http_status, $started_at, $api_key ) {
+		$is_array       = is_array( $decoded );
+		$lighthouse     = $is_array && isset( $decoded['lighthouseResult'] ) && is_array( $decoded['lighthouseResult'] ) ? $decoded['lighthouseResult'] : array();
+		$categories     = isset( $lighthouse['categories'] ) && is_array( $lighthouse['categories'] ) ? $lighthouse['categories'] : array();
+		$error          = $is_array && isset( $decoded['error'] ) && is_array( $decoded['error'] ) ? $decoded['error'] : array();
+		$runtime_error  = isset( $lighthouse['runtimeError'] ) && is_array( $lighthouse['runtimeError'] ) ? $lighthouse['runtimeError'] : array();
+		$diagnostic     = array(
+			'elapsed_ms'              => $this->elapsed_milliseconds( $started_at ),
+			'http_status'             => absint( $http_status ),
+			'has_lighthouse_result'   => ! empty( $lighthouse ),
+			'has_performance_category' => isset( $categories['performance'] ) && is_array( $categories['performance'] ),
+		);
+
+		if ( isset( $error['status'] ) ) {
+			$diagnostic['google_error_status'] = $this->sanitize_diagnostic_text( $error['status'], $api_key, 80 );
+		}
+		if ( isset( $error['message'] ) ) {
+			$diagnostic['google_error_message'] = $this->sanitize_diagnostic_text( $error['message'], $api_key, 240 );
+		}
+		if ( isset( $runtime_error['code'] ) ) {
+			$diagnostic['runtime_error_code'] = $this->sanitize_diagnostic_text( $runtime_error['code'], $api_key, 80 );
+		}
+
+		return $diagnostic;
+	}
+
+	/**
+	 * Stores diagnostics in a private transient keyed only by URL hash/strategy.
+	 *
+	 * @param string              $url        Validated audit URL.
+	 * @param string              $strategy   Desktop or mobile.
+	 * @param array<string,mixed> $diagnostic Safe diagnostic fields.
+	 * @return void
+	 */
+	private function record_diagnostic( $url, $strategy, array $diagnostic ) {
+		$diagnostic['strategy']    = $strategy;
+		$diagnostic['recorded_at'] = time();
+
+		set_transient(
+			'scsa_psi_diag_' . substr( hash( 'sha256', $url . '|' . $strategy ), 0, 35 ),
+			$diagnostic,
+			DAY_IN_SECONDS
+		);
+	}
+
+	/**
+	 * Sanitizes and bounds one diagnostic string without retaining secrets.
+	 *
+	 * @param mixed  $value   Candidate diagnostic value.
+	 * @param string $api_key API key to redact if an upstream message echoes it.
+	 * @param int    $length  Maximum stored length.
+	 * @return string
+	 */
+	private function sanitize_diagnostic_text( $value, $api_key, $length ) {
+		$text = is_scalar( $value ) ? (string) $value : '';
+
+		if ( '' !== $api_key ) {
+			$text = str_replace( $api_key, '[redacted]', $text );
+		}
+
+		return substr( sanitize_text_field( $text ), 0, absint( $length ) );
+	}
+
+	/**
+	 * Returns elapsed wall-clock time in whole milliseconds.
+	 *
+	 * @param float $started_at Start timestamp from microtime().
+	 * @return int
+	 */
+	private function elapsed_milliseconds( $started_at ) {
+		return max( 0, (int) round( ( microtime( true ) - (float) $started_at ) * 1000 ) );
 	}
 
 	/**

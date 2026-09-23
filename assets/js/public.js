@@ -540,11 +540,20 @@
 	function renderPageSpeedPanel( module, strategy ) {
 		var data = module.scsaPageSpeedData || {};
 		var result = data[ strategy ] || { available: false };
+		var state = module.scsaPageSpeedStates && module.scsaPageSpeedStates[ strategy ] ? module.scsaPageSpeedStates[ strategy ] : 'complete';
 		var panel = module.querySelector( '.scsa-pagespeed-panel' );
 		var activeTab = module.querySelector( '[data-scsa-pagespeed-tab="' + strategy + '"]' );
 
 		panel.replaceChildren();
 		panel.setAttribute( 'aria-labelledby', activeTab ? activeTab.id : '' );
+		if ( state === 'loading' ) {
+			var loading = element( 'div', 'scsa-pagespeed-loading' );
+			loading.setAttribute( 'role', 'status' );
+			loading.appendChild( element( 'span', 'scsa-pagespeed-loading-indicator' ) );
+			loading.appendChild( element( 'span', '', config.i18n.analyzingPerformance ) );
+			panel.appendChild( loading );
+			return;
+		}
 		if ( ! result.available ) {
 			panel.appendChild( element( 'p', 'scsa-pagespeed-unavailable', config.i18n.performanceUnavailable ) );
 			return;
@@ -599,7 +608,38 @@
 		renderPageSpeedPanel( module, strategy );
 	}
 
-	function createPageSpeedModule( performance ) {
+	function updatePageSpeedTab( module, strategy ) {
+		var button = module.querySelector( '[data-scsa-pagespeed-tab="' + strategy + '"]' );
+		var result = module.scsaPageSpeedData[ strategy ] || { available: false };
+		var state = module.scsaPageSpeedStates[ strategy ];
+		var label = strategy === 'desktop' ? config.i18n.desktop : config.i18n.mobile;
+		var hasScore = result.available && result.score !== null && result.score !== '' && Number.isFinite( Number( result.score ) );
+		var value = state === 'loading' ? config.i18n.analyzingShort : hasScore ? Number( result.score ) : config.i18n.unavailable;
+
+		button.querySelector( 'strong' ).textContent = value;
+		button.classList.toggle( 'is-loading', state === 'loading' );
+		if ( state === 'loading' ) {
+			button.setAttribute( 'aria-label', formatText( config.i18n.pageSpeedAnalyzingScore, [ label ] ) );
+		} else {
+			button.setAttribute( 'aria-label', formatText( hasScore ? config.i18n.pageSpeedScore : config.i18n.pageSpeedUnavailableScore, hasScore ? [ label, value ] : [ label ] ) );
+		}
+	}
+
+	function updatePageSpeedStrategy( module, strategy, result ) {
+		module.scsaPageSpeedData[ strategy ] = result && typeof result === 'object' ? result : { available: false };
+		module.scsaPageSpeedStates[ strategy ] = 'complete';
+		updatePageSpeedTab( module, strategy );
+		if ( module.scsaPageSpeedStates.desktop === 'complete' && module.scsaPageSpeedStates.mobile === 'complete' ) {
+			module.querySelector( '.scsa-pagespeed-summary-copy' ).textContent = config.i18n.labDescription;
+		}
+
+		var selected = module.querySelector( '[data-scsa-pagespeed-tab="' + strategy + '"][aria-selected="true"]' );
+		if ( selected ) {
+			renderPageSpeedPanel( module, strategy );
+		}
+	}
+
+	function createPageSpeedModule( performance, loading ) {
 		pageSpeedInstance++;
 		var module = element( 'section', 'scsa-pagespeed' );
 		var header = element( 'div', 'scsa-pagespeed-header' );
@@ -611,17 +651,14 @@
 		var data = performance && typeof performance === 'object' ? performance : {};
 
 		title.appendChild( element( 'span', 'scsa-pagespeed-kicker', config.i18n.pageSpeedTitle ) );
-		title.appendChild( element( 'p', '', config.i18n.labDescription ) );
+		title.appendChild( element( 'p', 'scsa-pagespeed-summary-copy', loading ? config.i18n.analyzingPerformance : config.i18n.labDescription ) );
 		header.appendChild( title );
 		module.appendChild( header );
 		tabs.setAttribute( 'role', 'tablist' );
 		tabs.setAttribute( 'aria-label', config.i18n.pageSpeedTitle );
 
 		[ 'desktop', 'mobile' ].forEach( function ( strategy, index ) {
-			var result = data[ strategy ] || { available: false };
 			var label = strategy === 'desktop' ? config.i18n.desktop : config.i18n.mobile;
-			var hasScore = result.available && result.score !== null && result.score !== '' && Number.isFinite( Number( result.score ) );
-			var score = hasScore ? Number( result.score ) : config.i18n.unavailable;
 			var button = element( 'button', 'scsa-pagespeed-tab' );
 
 			button.type = 'button';
@@ -630,10 +667,9 @@
 			button.setAttribute( 'role', 'tab' );
 			button.setAttribute( 'aria-controls', panelId );
 			button.setAttribute( 'aria-selected', index === 0 ? 'true' : 'false' );
-			button.setAttribute( 'aria-label', formatText( hasScore ? config.i18n.pageSpeedScore : config.i18n.pageSpeedUnavailableScore, hasScore ? [ label, score ] : [ label ] ) );
 			button.tabIndex = index === 0 ? 0 : -1;
 			button.appendChild( element( 'span', '', label ) );
-			button.appendChild( element( 'strong', '', score ) );
+			button.appendChild( element( 'strong', '', '' ) );
 			tabs.appendChild( button );
 		} );
 
@@ -641,16 +677,23 @@
 		details.appendChild( element( 'summary', 'scsa-pagespeed-details-summary', config.i18n.viewDetails ) );
 		panel.id = panelId;
 		panel.setAttribute( 'role', 'tabpanel' );
+		panel.setAttribute( 'aria-live', 'polite' );
 		panel.tabIndex = 0;
 		details.appendChild( panel );
 		module.appendChild( details );
 		module.scsaPageSpeedData = data;
+		module.scsaPageSpeedStates = {
+			desktop: loading ? 'loading' : 'complete',
+			mobile: loading ? 'loading' : 'complete'
+		};
+		updatePageSpeedTab( module, 'desktop' );
+		updatePageSpeedTab( module, 'mobile' );
 		selectPageSpeedStrategy( module, 'desktop', false );
 
 		return module;
 	}
 
-	function createCategoryAccordion( group, open, performance ) {
+	function createCategoryAccordion( group, open, performance, pageSpeedLoading ) {
 		var counts = categoryCounts( group.results );
 		var accordion = element( 'details', 'scsa-audit-category' );
 		var summary = element( 'summary', 'scsa-audit-category-summary' );
@@ -679,14 +722,14 @@
 			cards.appendChild( createCheckCard( result ) );
 		} );
 		if ( group.definition.key === 'technical' ) {
-			cards.appendChild( createPageSpeedModule( performance ) );
+			cards.appendChild( createPageSpeedModule( performance, pageSpeedLoading ) );
 		}
 		accordion.appendChild( summary );
 		accordion.appendChild( cards );
 		return accordion;
 	}
 
-	function renderDetailedChecks( tool, groups, performance ) {
+	function renderDetailedChecks( tool, groups, performance, pageSpeedLoading ) {
 		var container = tool.querySelector( '.scsa-checks' );
 		var highestSeverity = groups.reduce( function ( highest, group ) {
 			return Math.max( highest, categorySeverity( group.results ) );
@@ -696,7 +739,7 @@
 
 		groups.forEach( function ( group ) {
 			var shouldOpen = ! opened && categorySeverity( group.results ) === highestSeverity;
-			container.appendChild( createCategoryAccordion( group, shouldOpen, performance ) );
+			container.appendChild( createCategoryAccordion( group, shouldOpen, performance, pageSpeedLoading ) );
 			opened = opened || shouldOpen;
 		} );
 	}
@@ -739,13 +782,44 @@
 		renderCategorySummary( tool, groups );
 		renderRecommendations( tool, report.recommendations, results );
 		renderSerpPreview( tool, results, report.audited_url );
-		renderDetailedChecks( tool, groups, report.performance );
+		var pageSpeedLoading = Boolean( report.pagespeed_request && report.pagespeed_request.enabled );
+		renderDetailedChecks( tool, groups, report.performance, pageSpeedLoading );
 		tool.querySelector( '.scsa-consultation-form [name="website"]' ).value = report.audited_url || '';
 		setCheckFilter( tool, 'all' );
 		reportPanel.hidden = false;
 		window.requestAnimationFrame( function () { reportPanel.classList.add( 'is-visible' ); } );
 		scrollToElement( reportPanel, 'start' );
 		return true;
+	}
+
+	function requestPageSpeed( tool, report, auditRun ) {
+		var request = report.pagespeed_request || {};
+		var module = tool.querySelector( '.scsa-pagespeed' );
+
+		if ( ! request.enabled || ! request.nonce || ! report.audited_url || ! module ) {
+			return;
+		}
+
+		[ 'desktop', 'mobile' ].forEach( function ( strategy ) {
+			send( {
+				action: 'scsa_run_pagespeed',
+				nonce: request.nonce,
+				url: report.audited_url,
+				strategy: strategy
+			} ).then( function ( response ) {
+				if ( ! response.success || ! response.data || response.data.strategy !== strategy ) {
+					throw new Error( config.i18n.performanceUnavailable );
+				}
+				if ( tool.scsaAuditRun !== auditRun || ! module.isConnected ) {
+					return;
+				}
+				updatePageSpeedStrategy( module, strategy, response.data.result );
+			} ).catch( function () {
+				if ( tool.scsaAuditRun === auditRun && module.isConnected ) {
+					updatePageSpeedStrategy( module, strategy, { available: false } );
+				}
+			} );
+		} );
 	}
 
 	function send( values ) {
@@ -817,6 +891,7 @@
 		var auditButtonLabel = auditButton.querySelector( 'span' );
 		var originalButtonLabel = auditButtonLabel.textContent;
 		var consultationForm = tool.querySelector( '.scsa-consultation-form' );
+		tool.scsaAuditRun = 0;
 
 		auditForm.addEventListener( 'submit', function ( event ) {
 			event.preventDefault();
@@ -831,6 +906,8 @@
 			}
 
 			input.value = url;
+			tool.scsaAuditRun++;
+			var auditRun = tool.scsaAuditRun;
 			input.removeAttribute( 'aria-invalid' );
 			message( tool, '', '' );
 			tool.querySelector( '.scsa-report' ).hidden = true;
@@ -843,7 +920,9 @@
 				if ( ! response.success ) {
 					throw new Error( response.data && response.data.message ? response.data.message : config.i18n.failed );
 				}
-				renderReport( tool, response.data );
+				if ( renderReport( tool, response.data ) ) {
+					requestPageSpeed( tool, response.data, auditRun );
+				}
 			} ).catch( function ( error ) {
 				message( tool, error.message || config.i18n.failed, 'error' );
 			} ).finally( function () {

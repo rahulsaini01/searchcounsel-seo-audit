@@ -191,7 +191,7 @@ class SCSA_Settings {
 		printf(
 			'<input type="hidden" name="scsa_settings[pagespeed_enabled]" value="0" /><label><input type="checkbox" name="scsa_settings[pagespeed_enabled]" value="1" %s /> %s</label>',
 			checked( 1, absint( $settings['pagespeed_enabled'] ), false ),
-			esc_html__( 'Request PageSpeed data during each public audit when no valid cache entry exists.', 'searchcounsel-seo-audit' )
+			esc_html__( 'Request PageSpeed data asynchronously after each public SEO report when no valid cache entry exists.', 'searchcounsel-seo-audit' )
 		);
 	}
 

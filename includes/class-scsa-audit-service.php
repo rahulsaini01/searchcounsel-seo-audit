@@ -43,10 +43,6 @@ class SCSA_Audit_Service {
 		$builder = new SCSA_Report_Builder( new SCSA_Score_Engine() );
 		$report  = $builder->build( $audit );
 
-		// Performance is supplemental report data and never enters SEO scoring.
-		$pagespeed             = new SCSA_PageSpeed_Insights();
-		$report['performance'] = $pagespeed->analyze( $report['audited_url'] );
-
 		// History is useful to site owners but must never prevent a visitor report.
 		$history = new SCSA_History_Repository();
 		$history->save( $report );

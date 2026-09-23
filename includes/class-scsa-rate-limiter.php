@@ -23,20 +23,36 @@ class SCSA_Rate_Limiter {
 		$limit  = max( 1, absint( $limit ) );
 		$window = max( MINUTE_IN_SECONDS, absint( $window ) );
 		$key    = $this->key( $scope );
-		$state  = get_transient( $key );
-		$count  = is_array( $state ) && isset( $state['count'] ) ? absint( $state['count'] ) : 0;
+		$lock   = SCSA_Database_Lock::acquire( 'rate', $key, 2 );
 
-		if ( $count >= $limit ) {
-			return new WP_Error( 'scsa_rate_limited', __( 'Too many requests have been made from this network. Please try again later.', 'searchcounsel-seo-audit' ) );
+		// Failing closed prevents lock contention from becoming a quota bypass.
+		if ( is_wp_error( $lock ) ) {
+			return new WP_Error( 'scsa_rate_limit_unavailable', __( 'Request capacity is temporarily busy. Please try again shortly.', 'searchcounsel-seo-audit' ) );
 		}
 
-		set_transient(
-			$key,
-			array( 'count' => $count + 1 ),
-			$window
-		);
+		try {
+			// The narrow database lock makes this transient update atomic per identity.
+			$state = get_transient( $key );
+			$count = is_array( $state ) && isset( $state['count'] ) ? absint( $state['count'] ) : 0;
 
-		return true;
+			if ( $count >= $limit ) {
+				return new WP_Error( 'scsa_rate_limited', __( 'Too many requests have been made from this network. Please try again later.', 'searchcounsel-seo-audit' ) );
+			}
+
+			$stored = set_transient(
+				$key,
+				array( 'count' => $count + 1 ),
+				$window
+			);
+
+			if ( false === $stored ) {
+				return new WP_Error( 'scsa_rate_limit_unavailable', __( 'Request capacity is temporarily unavailable. Please try again shortly.', 'searchcounsel-seo-audit' ) );
+			}
+
+			return true;
+		} finally {
+			$lock->release();
+		}
 	}
 
 	/**

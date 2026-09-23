@@ -35,7 +35,7 @@ The public interface is rendered from the audit response already produced by the
 
 ### Frontend markup compatibility
 
-Version 1.2.0 introduced a new public report structure and replaced several presentation-only selectors from earlier versions. Third-party theme CSS or JavaScript that targets legacy selectors such as `.scsa-progress`, `.scsa-summary-card`, or `[data-step]` may need to be updated. Version 1.3.0 adds namespaced `.scsa-pagespeed-*` components inside the existing Technical SEO accordion. The supported shortcode remains `[searchcounsel_audit]`, and the audit and consultation request contracts are unchanged.
+Version 1.2.0 introduced a new public report structure and replaced several presentation-only selectors from earlier versions. Third-party theme CSS or JavaScript that targets legacy selectors such as `.scsa-progress`, `.scsa-summary-card`, or `[data-step]` may need to be updated. Version 1.3.0 added namespaced `.scsa-pagespeed-*` components inside the existing Technical SEO accordion. Version 1.4.0 moves Google analysis into bounded asynchronous requests after the core report renders. The supported shortcode remains `[searchcounsel_audit]`.
 
 ## Architecture
 
@@ -43,10 +43,11 @@ Version 1.2.0 introduced a new public report structure and replaced several pres
 searchcounsel-seo-audit.php          Plugin bootstrap and activation hook
 includes/
   class-scsa-public.php              Shortcode and public asset loading
-  class-scsa-audit-controller.php    Public AJAX API and consultation endpoint
+  class-scsa-audit-controller.php    Audit, asynchronous PageSpeed, and consultation AJAX endpoints
   class-scsa-audit-service.php       Validation → fetch → analysis → report workflow
   class-scsa-url-validator.php       Public URL / DNS / private-network protection
   class-scsa-http-client.php         WordPress HTTP API wrapper with safe redirects
+  class-scsa-database-lock.php       Bounded MySQL advisory locks for concurrency safety
   class-scsa-pagespeed-insights.php  Server-side PageSpeed API, normalization, and cache
   class-scsa-page-analyzer.php       DOM parsing and check orchestration
   class-scsa-score-engine.php        Transparent weighted 0–100 scoring
@@ -75,7 +76,11 @@ PageSpeed is disabled by default. In **SEO Audit → Settings → PageSpeed Insi
 
 The saved key is a write-only field: WordPress never renders the stored value back into the admin page. For stronger secret management, define `SCSA_PAGESPEED_API_KEY` in `wp-config.php`; that server constant takes precedence over the saved option and disables the admin key field. If an older database key exists, administrators can remove it securely from the same Settings API form while the constant remains active. Server requests transmit the key in Google's `X-Goog-Api-Key` header rather than placing it in the request URL.
 
-Successful desktop and mobile responses are cached independently by a SHA-256-derived key based on the validated final URL and strategy. Failed or malformed responses are not cached. Uncached strategies use a five-second request cap inside a shared twelve-second PageSpeed budget, preventing performance analysis from consuming the full public audit request lifetime. PageSpeed runs inside the existing rate-limited audit request, so it does not create another public quota-consumption endpoint.
+The normal SEO audit completes and renders before PageSpeed begins. The audit response contains a short-lived WordPress nonce bound to the validated final URL only when PageSpeed is configured; it never contains the API key. The frontend then starts separate Desktop and Mobile requests in parallel, allowing each strategy to finish or fail independently without delaying the SEO report. Switching tabs only changes the rendered strategy and never starts another request.
+
+Successful desktop and mobile responses are cached independently by a SHA-256-derived key based on the validated final URL and strategy. Each asynchronous request checks its strategy cache before calling Google, and failed or malformed responses are not cached. A narrow database advisory lock prevents simultaneous requests for the same URL and strategy from duplicating an uncached Google call; the cache is checked again after the lock is acquired. Uncached strategies have a 25-second server-side Google request cap.
+
+Public counters use short-lived, site-scoped database advisory locks so concurrent requests cannot bypass the transient-backed limit, even without Redis or another persistent object cache. PageSpeed uses separate Desktop and Mobile scopes, each with the configured `audit_rate_limit`. With the default value of 6, one network address may make up to six Desktop and six Mobile PageSpeed endpoint requests per hour. A normal audit launches one request in each scope. Lock acquisition is bounded and fails closed when synchronization is unavailable.
 
 ## Security and data handling
 
@@ -85,6 +90,7 @@ Successful desktop and mobile responses are cached independently by a SHA-256-de
 - Every request and redirect goes through the URL validator and WordPress's safe HTTP API. Downloads, timeouts, redirects, sitemap checks, and link probes are bounded.
 - PageSpeed receives only the already-validated final audit URL. The API key is used only in the server-to-server Google request and is never localized to JavaScript, included in public markup, returned in AJAX data, or written to audit history.
 - The browser receives a normalized PageSpeed subset rather than Google's raw response. API errors, quota failures, timeouts, and malformed responses become a generic unavailable state and never prevent the normal SEO report from rendering.
+- Safe PageSpeed diagnostics are retained privately for 24 hours in hashed transient keys. They contain strategy, timing, HTTP/WP error status, bounded sanitized Google error text, runtime-error code, and response-shape flags only—never the API key, headers, request URL, or raw response.
 - Link validation samples at most 10 unique public links by default (filterable up to 20); it is not a full-site crawler.
 - Public audit and consultation endpoints are rate-limited with short-lived transient keys based on a site-salted hash of the direct client IP. No raw visitor IP is saved.
 - Audit history stores the audited URL, score, compact summary, report data, and timestamp. It never stores downloaded page HTML or visitor IPs. Uninstall intentionally preserves business records and settings so site owners control retention.

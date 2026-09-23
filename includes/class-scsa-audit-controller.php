@@ -16,6 +16,8 @@ class SCSA_Audit_Controller {
 	public function __construct() {
 		add_action( 'wp_ajax_scsa_run_public_audit', array( $this, 'run_public_audit' ) );
 		add_action( 'wp_ajax_nopriv_scsa_run_public_audit', array( $this, 'run_public_audit' ) );
+		add_action( 'wp_ajax_scsa_run_pagespeed', array( $this, 'run_pagespeed' ) );
+		add_action( 'wp_ajax_nopriv_scsa_run_pagespeed', array( $this, 'run_pagespeed' ) );
 		add_action( 'wp_ajax_scsa_submit_consultation', array( $this, 'submit_consultation' ) );
 		add_action( 'wp_ajax_nopriv_scsa_submit_consultation', array( $this, 'submit_consultation' ) );
 	}
@@ -46,8 +48,77 @@ class SCSA_Audit_Controller {
 			wp_send_json_error( array( 'message' => $report->get_error_message() ), 422 );
 		}
 
+		if ( SCSA_PageSpeed_Insights::is_configured() ) {
+			$report['pagespeed_request'] = array(
+				'enabled' => true,
+				'nonce'   => wp_create_nonce( $this->pagespeed_nonce_action( $report['audited_url'] ) ),
+			);
+		} else {
+			$report['pagespeed_request'] = array( 'enabled' => false );
+		}
+
 		nocache_headers();
 		wp_send_json_success( $report );
+	}
+
+	/**
+	 * Retrieves one PageSpeed strategy after the main SEO report has rendered.
+	 *
+	 * Desktop and mobile use separate browser requests so WordPress can execute
+	 * the two bounded Google calls concurrently without delaying the SEO audit.
+	 *
+	 * @return void
+	 */
+	public function run_pagespeed() {
+		$raw_url      = isset( $_POST['url'] ) && is_string( $_POST['url'] ) ? wp_unslash( $_POST['url'] ) : '';
+		$raw_strategy = isset( $_POST['strategy'] ) && is_string( $_POST['strategy'] ) ? wp_unslash( $_POST['strategy'] ) : null;
+
+		// Validate raw input strictly so malformed values cannot normalize to valid ones.
+		if ( ! is_string( $raw_strategy ) || ! in_array( $raw_strategy, array( 'desktop', 'mobile' ), true ) ) {
+			wp_send_json_error( array( 'message' => __( 'The requested performance strategy is invalid.', 'searchcounsel-seo-audit' ) ), 400 );
+		}
+
+		$strategy = $raw_strategy;
+
+		if ( ! check_ajax_referer( $this->pagespeed_nonce_action( $raw_url ), 'nonce', false ) ) {
+			wp_send_json_error( array( 'message' => __( 'Your security token expired. Run the SEO audit again.', 'searchcounsel-seo-audit' ) ), 403 );
+		}
+
+		$settings = SCSA_Settings::get();
+		$limiter  = new SCSA_Rate_Limiter();
+		$allowed  = $limiter->consume( 'pagespeed_' . $strategy, absint( $settings['audit_rate_limit'] ), HOUR_IN_SECONDS );
+
+		if ( is_wp_error( $allowed ) ) {
+			wp_send_json_error( array( 'message' => $allowed->get_error_message() ), 429 );
+		}
+
+		$validator = new SCSA_URL_Validator();
+		$url       = $validator->validate( $raw_url );
+
+		if ( is_wp_error( $url ) ) {
+			wp_send_json_error( array( 'message' => $url->get_error_message() ), 422 );
+		}
+
+		$pagespeed = new SCSA_PageSpeed_Insights();
+		$result    = $pagespeed->analyze_strategy( $url, $strategy );
+
+		nocache_headers();
+		wp_send_json_success(
+			array(
+				'strategy' => $strategy,
+				'result'   => $result,
+			)
+		);
+	}
+
+	/**
+	 * Creates a nonce action bound to the validated audit URL.
+	 *
+	 * @param string $url Validated audit URL.
+	 * @return string
+	 */
+	private function pagespeed_nonce_action( $url ) {
+		return 'scsa_pagespeed_' . substr( hash( 'sha256', (string) $url ), 0, 32 );
 	}
 
 	/**
